@@ -392,7 +392,7 @@ class TrackDecider {
       summaryTrackId,
       name: MEM_DMA_COUNTER_NAME,
       id,
-      collapsed: true,
+      collapsed: false,
     });
     this.addTrackGroupActions.push(addGroup);
   }
@@ -1042,7 +1042,6 @@ class TrackDecider {
       const threadName = it.threadName;
       const processName = it.processName;
       const hasSched = !!it.hasSched;
-      const hasHeapProfiles = !!it.hasHeapProfiles;
 
       // Group by upid if present else by utid.
       let pUuid =
@@ -1072,7 +1071,7 @@ class TrackDecider {
           summaryTrackId,
           name,
           id: pUuid,
-          collapsed: !hasHeapProfiles,
+          collapsed: false,
         });
 
         this.addTrackGroupActions.push(addTrackGroup);

@@ -22,7 +22,6 @@ import {assertExists, reportError, setErrorHandler} from '../base/logging';
 import {forwardRemoteCalls} from '../base/remote';
 import {Actions, DeferredAction, StateActions} from '../common/actions';
 import {AggregateData} from '../common/aggregation_data';
-import {tryGetTrace} from '../common/cache_manager';
 import {ConversionJobStatusUpdate} from '../common/conversion_jobs';
 import {
   LogBoundsKey,
@@ -39,11 +38,8 @@ import {
 } from '../common/worker_messages';
 import {initController} from '../controller/index';
 
-import {AnalyzePage} from './analyze_page';
-import {loadAndroidBugToolInfo} from './android_bug_tool';
 import {initCssConstants} from './css_constants';
 import {maybeShowErrorDialog} from './error_dialog';
-import {installFileDropHandler} from './file_drop_handler';
 import {
   CounterDetails,
   CpuProfileDetails,
@@ -55,23 +51,8 @@ import {
   ThreadDesc,
   ThreadStateDetails
 } from './globals';
-import {HomePage} from './home_page';
-import {initLiveReloadIfLocalhost} from './live_reload';
-import {MetricsPage} from './metrics_page';
 import {PageAttrs} from './pages';
-import {postMessageHandler} from './post_message_handler';
-import {RecordPage, updateAvailableAdbDevices} from './record_page';
-import {Router} from './router';
-import {CheckHttpRpcConnection} from './rpc_http_dialog';
-import {taskTracker} from './task_tracker';
-import {TraceInfoPage} from './trace_info_page';
 import {ViewerPage} from './viewer_page';
-
-const EXTENSION_ID = 'lfmkphfpdbjijhpomgecfikhfohaoine';
-
-function isLocalhostTraceUrl(url: string): boolean {
-  return ['127.0.0.1', 'localhost'].includes((new URL(url)).hostname);
-}
 
 let idleWasmWorker: Worker;
 let activeWasmWorker: Worker;
@@ -80,12 +61,10 @@ let activeWasmWorker: Worker;
  * The API the main thread exposes to the controller.
  */
 class FrontendApi {
-  private router: Router;
   private port: MessagePort;
   private state: State;
 
-  constructor(router: Router, port: MessagePort) {
-    this.router = router;
+  constructor(port: MessagePort) {
     this.state = createEmptyState();
     this.port = port;
   }
@@ -344,69 +323,11 @@ class FrontendApi {
   }
 
   private redraw(): void {
-    const traceIdString =
-        globals.state.traceUuid ? `?trace_id=${globals.state.traceUuid}` : '';
-    if (globals.state.route &&
-        globals.state.route + traceIdString !==
-            this.router.getFullRouteFromHash()) {
-      this.router.setRouteOnHash(globals.state.route, traceIdString);
-    }
     globals.rafScheduler.scheduleFullRedraw();
   }
 }
 
-function setExtensionAvailability(available: boolean) {
-  globals.dispatch(Actions.setExtensionAvailable({
-    available,
-  }));
-}
-
-function setupContentSecurityPolicy() {
-  // Note: self and sha-xxx must be quoted, urls data: and blob: must not.
-  const policy = {
-    'default-src': [
-      `'self'`,
-      // Google Tag Manager bootstrap.
-      `'sha256-LirUKeorCU4uRNtNzr8tlB11uy8rzrdmqHCX38JSwHY='`,
-    ],
-    'script-src': [
-      `'self'`,
-      'https://*.google.com',
-      'https://*.googleusercontent.com',
-      'https://www.googletagmanager.com',
-      'https://www.google-analytics.com',
-    ],
-    'object-src': ['none'],
-    'connect-src': [
-      `'self'`,
-      'http://127.0.0.1:9001',  // For trace_processor_shell --httpd.
-      'https://www.google-analytics.com',
-      'https://*.googleapis.com',  // For Google Cloud Storage fetches.
-      'blob:',
-      'data:',
-    ],
-    'img-src': [
-      `'self'`,
-      'data:',
-      'blob:',
-      'https://www.google-analytics.com',
-      'https://www.googletagmanager.com',
-    ],
-    'navigate-to': ['https://*.perfetto.dev', 'self'],
-  };
-  const meta = document.createElement('meta');
-  meta.httpEquiv = 'Content-Security-Policy';
-  let policyStr = '';
-  for (const [key, list] of Object.entries(policy)) {
-    policyStr += `${key} ${list.join(' ')}; `;
-  }
-  meta.content = policyStr;
-  document.head.appendChild(meta);
-}
-
 function main() {
-  setupContentSecurityPolicy();
-
   // Load the css. The load is asynchronous and the CSS is not ready by the time
   // appenChild returns.
   const cssLoadPromise = defer<void>();
@@ -415,20 +336,7 @@ function main() {
   css.href = globals.root + 'perfetto.css';
   css.onload = () => cssLoadPromise.resolve();
   css.onerror = (err) => cssLoadPromise.reject(err);
-  const favicon = document.head.querySelector('#favicon') as HTMLLinkElement;
-  if (favicon) favicon.href = globals.root + 'assets/favicon.png';
-
-  // Load the script to detect if this is a Googler (see comments on globals.ts)
-  // and initialize GA after that (or after a timeout if something goes wrong).
-  const script = document.createElement('script');
-  script.src =
-      'https://storage.cloud.google.com/perfetto-ui-internal/is_internal_user.js';
-  script.async = true;
-  script.onerror = () => globals.logging.initialize();
-  script.onload = () => globals.logging.initialize();
-  setTimeout(() => globals.logging.initialize(), 5000);
-
-  document.head.append(script, css);
+  document.head.append(css);
 
   // Add Error handlers for JS error and for uncaught exceptions in promises.
   setErrorHandler((err: string) => maybeShowErrorDialog(err));
@@ -461,41 +369,10 @@ function main() {
   globals.serviceWorkerController.install();
 
   const routes = new Map<string, m.Component<PageAttrs>>();
-  routes.set('/', HomePage);
+  routes.set('/', ViewerPage);
   routes.set('/viewer', ViewerPage);
-  routes.set('/record', RecordPage);
-  routes.set('/query', AnalyzePage);
-  routes.set('/metrics', MetricsPage);
-  routes.set('/info', TraceInfoPage);
-  const router = new Router('/', routes, dispatch, globals.logging);
-  const frontendApi = new FrontendApi(router, controllerChannel.port2);
+  const frontendApi = new FrontendApi(controllerChannel.port2);
   forwardRemoteCalls(frontendChannel.port2, frontendApi);
-
-  // We proxy messages between the extension and the controller because the
-  // controller's worker can't access chrome.runtime.
-  const extensionPort = window.chrome && chrome.runtime ?
-      chrome.runtime.connect(EXTENSION_ID) :
-      undefined;
-
-  setExtensionAvailability(extensionPort !== undefined);
-
-  if (extensionPort) {
-    extensionPort.onDisconnect.addListener(_ => {
-      setExtensionAvailability(false);
-      // tslint:disable-next-line: no-unused-expression
-      void chrome.runtime.lastError;  // Needed to not receive an error log.
-    });
-    // This forwards the messages from the extension to the controller.
-    extensionPort.onMessage.addListener(
-        (message: object, _port: chrome.runtime.Port) => {
-          extensionLocalChannel.port2.postMessage(message);
-        });
-  }
-
-  // This forwards the messages from the controller to the extension
-  extensionLocalChannel.port2.onmessage = ({data}) => {
-    if (extensionPort) extensionPort.postMessage(data);
-  };
 
   // Put these variables in the global scope for better debugging.
   (window as {} as {m: {}}).m = m;
@@ -507,107 +384,25 @@ function main() {
     if (e.ctrlKey) e.preventDefault();
   }, {passive: false});
 
-  cssLoadPromise.then(() => onCssLoaded(router));
-
-  if (globals.testing) {
-    document.body.classList.add('testing');
-  }
+  const url = document.getElementById('timeline_data_source')!.innerHTML;
+  cssLoadPromise.then(() => onCssLoaded(url));
+  globals.state.route="/viewer";
 }
 
-function onCssLoaded(router: Router) {
+function onCssLoaded(url: string) {
   initCssConstants();
-  // Clear all the contents of the initial page (e.g. the <pre> error message)
-  // And replace it with the root <main> element which will be used by mithril.
-  document.body.innerHTML = '<main></main>';
-  const main = assertExists(document.body.querySelector('main'));
+
+  const main = assertExists(document.getElementById('timeline_main'));
+
+  m.render(main, m(ViewerPage));
+
   globals.rafScheduler.domRedraw = () => {
-    m.render(main, router.resolve(globals.state.route));
+    m.render(main, m(ViewerPage));
   };
 
-  /**
-   * Start of hack for backwards compatibility:
-   * There are some old URLs in the form of 'record?p=power'. We want these
-   * to keep opening the desired page(see b/191255021#comment2).
-   */
-  if (window.location.hash.startsWith('#!/record?p=')) {
-    window.location.hash = window.location.hash.replace('?p=', '/');
-  }
-  // end of hack for backwards compatibility
-
-  router.navigateToCurrentHash();
-
-  // /?s=xxxx for permalinks.
-  const stateHash = Router.param('s');
-  const traceUuid = Router.param('trace_id');
-  const urlHash = Router.param('url');
-  const androidBugTool = Router.param('openFromAndroidBugTool');
-  if (typeof stateHash === 'string' && stateHash) {
-    globals.dispatch(Actions.loadPermalink({
-      hash: stateHash,
-    }));
-  } else if (typeof urlHash === 'string' && urlHash) {
-    if (isLocalhostTraceUrl(urlHash)) {
-      const fileName = urlHash.split('/').pop() || 'local_trace.pftrace';
-      const request = fetch(urlHash)
-                          .then(response => response.blob())
-                          .then(blob => {
-                            globals.dispatch(Actions.openTraceFromFile({
-                              file: new File([blob], fileName),
-                            }));
-                          })
-                          .catch(e => alert(`Could not load local trace ${e}`));
-      taskTracker.trackPromise(request, 'Downloading local trace');
-    } else {
-      globals.dispatch(Actions.openTraceFromUrl({
-        url: urlHash,
-      }));
-    }
-  } else if (androidBugTool) {
-    // TODO(hjd): Unify updateStatus and TaskTracker
-    globals.dispatch(Actions.updateStatus({
-      msg: 'Loading trace from ABT extension',
-      timestamp: Date.now() / 1000
-    }));
-    const loadInfo = loadAndroidBugToolInfo();
-    taskTracker.trackPromise(loadInfo, 'Loading trace from ABT extension');
-    loadInfo
-        .then(info => {
-          globals.dispatch(Actions.openTraceFromFile({
-            file: info.file,
-          }));
-        })
-        .catch(e => {
-          console.error(e);
-        });
-  } else if (traceUuid) {
-    maybeLoadCachedTrace(traceUuid);
-  }
-
-  // Add support for opening traces from postMessage().
-  window.addEventListener('message', postMessageHandler, {passive: true});
-
-  // Will update the chip on the sidebar footer that notifies that the RPC is
-  // connected. Has no effect on the controller (which will repeat this check
-  // before creating a new engine).
-  CheckHttpRpcConnection();
-  initLiveReloadIfLocalhost();
-
-  updateAvailableAdbDevices();
-  try {
-    navigator.usb.addEventListener(
-        'connect', () => updateAvailableAdbDevices());
-    navigator.usb.addEventListener(
-        'disconnect', () => updateAvailableAdbDevices());
-  } catch (e) {
-    console.error('WebUSB API not supported');
-  }
-  installFileDropHandler();
-}
-
-async function maybeLoadCachedTrace(traceUuid: string) {
-  const trace = await tryGetTrace(traceUuid);
-  if (trace === undefined) return;
-  globals.dispatch(Actions.openTraceFromBuffer(trace));
+  globals.logging.logEvent('Trace Actions', 'Open example trace');
+  globals.frontendLocalState.localOnlyMode = false;
+  globals.dispatch(Actions.openTraceFromUrl({ url }));
 }
 
 main();

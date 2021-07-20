@@ -77,7 +77,7 @@ export class FrontendLocalState {
   focusedFlowIdLeft = -1;
   focusedFlowIdRight = -1;
   localOnlyMode = false;
-  sidebarVisible = true;
+  sidebarVisible = false;
   showPanningHint = false;
   showCookieConsent = false;
   visibleTracks = new Set<string>();
